@@ -1,2 +1,4 @@
 .pio/*
 .vscode/*
+Sprite.localpp.cpp
+TFT_eSPI.localpp.cpp
