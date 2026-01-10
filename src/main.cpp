@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <M5StickCPlus.h>
 
-
 bool useGetDepthAsync = true;
 bool recordSurveyHighlight = false, recordBreadCrumbTrail = false;
 uint32_t recordHighlightExpireTime = 0;
@@ -17,6 +16,7 @@ bool gps_ok = true, gpsTargetTimedOut = false, internetUploadOk = true;
 
 // forward declarations
 void drawSurveyDisplay();
+void drawSurveyDisplaySmooth();
 void dumpHeapUsage(const char* msg);
 
 // Stubs
@@ -77,8 +77,10 @@ void cycleDepthTempHumidity()
   bool& i = internetUploadOk, &g = gps_ok, &as = useGetDepthAsync;
   uint16_t& mins=minutesDurationDiving;
   uint32_t& rec_tm = recordHighlightExpireTime;
+  bool& rec_bdt = recordBreadCrumbTrail;
+
   uint32_t now = millis();
-  uint32_t dur = 800;
+  uint32_t dur = 600;
   uint32_t exp = now + dur;
 
   switch (step)
@@ -86,16 +88,16 @@ void cycleDepthTempHumidity()
     case 0: depth = 0.0; t = 0.0; h = 99.0; mins = 0; rec_tm = exp; break;
     case 1: depth = 1.1; t = 1.0; h = 8.0; mins++;break;
     case 2: depth = 2.2; t = 2.0; h = 10.0;mins++; break;
-    case 3: depth = 3.3; t = 5.0; h = 20.0;mins++; i = false; g = false; break;
-    case 4: depth = 10.0; t = 5.5; h = 30.0;mins++; as = false; break;
-    case 5: depth = 20.0; t = 7.0; h = 10.0;mins++;rec_tm = exp; break;
-    case 6: depth = 30.0; t = 8.0; h = 20.0;mins=10;break;
-    case 7: depth = 40.0; t = 9.0; h = 50.0;mins=11; recordBreadCrumbTrail = true; break;
-    case 8: depth = 30.0; t = 10.0; h = 55;mins++; recordBreadCrumbTrail = false; break;
-    case 9: depth = 10.0; t = 9.5; h = 51; mins=12; i = true; as = true; break;
-    case 10: depth = 6.0; t = 23.1; h = 80; mins=13; rec_tm = exp; break;
-    case 11: depth = 2.0; t = 1.0; h = 90; mins=98; g = true; break;
-    case 12: depth = 0.1; t = 18.0; h = 100; mins=99; break;
+    case 3: depth = 10.3; t = 5.0; h = 20.0;mins++; i = false; g = false; break;
+    case 4: depth = 11.0; t = 5.5; h = 30.0;mins++; as = false; break;
+    case 5: depth = 22.1; t = 7.0; h = 10.0;mins++;rec_tm = exp; break;
+    case 6: depth = 33.2; t = 8.0; h = 20.0;mins=10;break;
+    case 7: depth = 44.5; t = 9.0; h = 50.0;mins=11; rec_bdt = true; break;
+    case 8: depth = 31.1; t = 10.0; h = 55;mins++;  break;
+    case 9: depth = 11.1; t = 9.5; h = 51; mins=12; i = true; rec_bdt = false; as = true; break;
+    case 10: depth =22.2; t = 23.1; h = 80; mins=13; rec_tm = exp; break;
+    case 11: depth =22.3; t = 1.0; h = 90; mins=98; g = true; break;
+    case 12: depth =22.1; t = 18.0; h = 100; mins=99; break;
   }
   step = (step + 1) % 13;
 }
@@ -110,13 +112,200 @@ void setup()
 
 void loop()
 {
-    drawSurveyDisplay();
+  uint32_t wait = 100;
+    drawSurveyDisplaySmooth();
     cycleDepthTempHumidity();
-    delay(100);
+    delay(wait);
     cycleCourse();
-    delay(100);
+    delay(wait);
 }
 
+// total sprite RAM usage: 58652 bytes
+void drawSurveyDisplaySmooth()
+{
+    int16_t humiditySpriteWidth = TFT_WIDTH, temperatureSpriteWidth = TFT_WIDTH, pinSpriteWidth = TFT_WIDTH, depthSpriteWidth = TFT_WIDTH, timerSpriteWidth = TFT_WIDTH;
+    int16_t humiditySpriteHeight = 30, temperatureSpriteHeight = 18, pinSpriteHeight = 30, depthSpriteHeight = 72, timerSpriteHeight = 80 /* was 64 */;
+    int16_t humiditySpriteY = 210, temperatureSpriteY = 184, pinSpriteY = 69 /*(was 72)*/, depthSpriteY = 0, timerSpriteY = 105 /* was 120 */;
+
+    // sprites must not be deleted after use - affects the parent TFT_eSPI object for screen
+    static TFT_eSprite humiditySprite(&M5.Lcd);
+    static TFT_eSprite temperatureSprite(&M5.Lcd);
+    static TFT_eSprite pinSprite(&M5.Lcd);
+    static TFT_eSprite depthSprite(&M5.Lcd);
+    static TFT_eSprite timerSprite(&M5.Lcd);
+    static bool inited = false;
+
+    if (!inited)
+    {
+      if (!humiditySprite.createSprite(humiditySpriteWidth,humiditySpriteHeight) ||
+          !temperatureSprite.createSprite(temperatureSpriteWidth,temperatureSpriteHeight) || 
+          !pinSprite.createSprite(pinSpriteWidth,pinSpriteHeight) ||
+          !depthSprite.createSprite(depthSpriteWidth,depthSpriteHeight) ||
+          !timerSprite.createSprite(timerSpriteWidth,timerSpriteHeight)
+        )
+      {
+        return;
+      }
+      inited = true;
+    }
+
+    int charWidth=0, offset=0;
+    M5.Lcd.setRotation(0);
+
+    // print to main display: depth
+    depthSprite.fillSprite(TFT_BLACK);
+
+    bool filledBackground = true;
+    if (useGetDepthAsync)
+      depthSprite.setTextColor(TFT_CYAN, TFT_BLACK,filledBackground);
+    else
+      depthSprite.setTextColor(TFT_GREEN, TFT_BLACK,filledBackground);
+
+    depthSprite.setCursor(15, 0);
+    depthSprite.setFreeFont(&FreeSansBold18pt7b);
+    depthSprite.setTextSize(2);
+    depthSprite.setTextDatum(BL_DATUM);
+    depthSprite.setTextWrap(false);
+    if (depth < 10.0)
+    {
+      depthSprite.setCursor(0, 55);
+      depthSprite.printf("%.1f", depth);
+    }
+    else
+    {
+      depthSprite.setCursor(10, 55);
+      depthSprite.printf("%.0f", depth);
+    }
+
+    depthSprite.setFreeFont(&FreeSansBold12pt7b);
+    depthSprite.print("m");
+
+    depthSprite.pushSprite(0, depthSpriteY);
+
+    // print to pin sprite: -PIN-, -REC-, journey course or blank
+    pinSprite.fillSprite(TFT_BLACK);
+    pinSprite.setTextColor(TFT_MAGENTA, TFT_BLACK,filledBackground);
+    pinSprite.setFreeFont(&FreeSansBold18pt7b);
+
+    pinSprite.setTextDatum(TC_DATUM);
+    if (recordHighlightExpireTime != 0)
+    {
+      if (millis() < recordHighlightExpireTime)
+      {
+        pinSprite.drawString("--PIN--",  pinSprite.width() / 2, 0);  // Draw string using specified font number
+
+        if (recordSurveyHighlight)
+        { // flag gets reset in telemetry code after being logged first time
+          // Also publish is rate-limited internally to max 1 call per 5 seconds
+          publishToOceanicPinPlaced(Lat,Lng,magnetic_heading,depth);
+        }
+      }
+      else
+      {
+        recordHighlightExpireTime = 0;
+      }
+    }
+    else if (recordBreadCrumbTrail)
+    {
+        pinSprite.drawString("--REC--",  pinSprite.width() / 2, 0);  // Draw string using specified font number
+    }
+    else
+    {
+      if  (millis() - journey_clear_period > last_journey_commit_time || journey_distance == 0)
+      {
+        // print nothing
+      }
+      else
+      {
+        const bool surveyScreen = true;
+        std::string cardinal = getCardinal(journey_course,surveyScreen).c_str();
+        pinSprite.drawString(cardinal.c_str(),  pinSprite.width() / 2, 0);  // Draw string using specified font number
+      }
+    }
+    pinSprite.pushSprite(0, pinSpriteY);
+
+    timerSprite.fillSprite(TFT_BLACK);
+
+    // Print dive timer directly to display
+    if (diveTimerRunning == false && minutesDurationDiving == 0)    
+      timerSprite.setTextColor(TFT_BLUE, TFT_BLACK, filledBackground);     // dive not started yet
+    else if (diveTimerRunning == false && minutesDurationDiving > 0)
+      timerSprite.setTextColor(TFT_RED, TFT_BLACK, filledBackground);      // dive finished
+    else if (diveTimerRunning == true && whenToStopTimerDueToLackOfDepth == 0)
+      timerSprite.setTextColor(TFT_GREEN, TFT_BLACK, filledBackground);    // dive in progress
+    else if (diveTimerRunning == true && whenToStopTimerDueToLackOfDepth > 0)
+      timerSprite.setTextColor(TFT_ORANGE, TFT_BLACK, filledBackground);   // dive in progress but not at minimum depth
+    else
+      timerSprite.setTextColor(TFT_WHITE, TFT_BLACK, filledBackground);  // shouldn't get here.
+
+    timerSprite.setFreeFont(&FreeSansBold24pt7b);
+    timerSprite.setTextSize(2);
+    offset = (minutesDurationDiving < 10) ? 40 : 5;
+    timerSprite.setCursor(offset, 68);
+    timerSprite.printf("%hu'", minutesDurationDiving);
+    timerSprite.pushSprite(0, timerSpriteY);
+
+    // print to sprite water temperature and degrees sign
+    temperatureSprite.fillSprite(TFT_BLACK);
+    temperatureSprite.setTextSize(2);
+    temperatureSprite.setTextColor(TFT_GREEN, TFT_BLACK, filledBackground);
+    charWidth = 12;
+    const int degreeSignXOffset = 2, degreeSignYOffset = 4;
+    int len = (water_temperature < 9.99 ? 3 : 4);
+    temperatureSprite.setCursor((TFT_WIDTH-len*charWidth)/2, degreeSignYOffset);
+    temperatureSprite.printf("%.1f", water_temperature);
+    temperatureSprite.setTextSize(1);
+    temperatureSprite.setCursor(temperatureSprite.getCursorX()+degreeSignXOffset, 0);
+    temperatureSprite.print("o");
+    temperatureSprite.pushSprite(0, temperatureSpriteY);
+
+
+
+
+
+
+
+
+
+
+    // print to humidity sprite: gps status, humidity, internet status
+    humiditySprite.fillSprite(TFT_BLACK);
+    humiditySprite.setFreeFont(&FreeMonoBold18pt7b);
+    humiditySprite.setTextDatum(TL_DATUM);
+
+    // Set GPS 'G' character background color based on fix message timeout
+    if (!isGPSStreamOk())
+      humiditySprite.setTextColor(TFT_WHITE, TFT_RED, filledBackground);        // Red after 10 seconds no fix
+    else if (isGPSTargetShortTimedOut())
+      humiditySprite.setTextColor(TFT_BLACK, TFT_YELLOW, filledBackground);     // Yellow after 3 seconds no fix  
+    else
+      humiditySprite.setTextColor(TFT_WHITE, TFT_BLACK, filledBackground);      // Black when GPS fixes current
+
+    humiditySprite.drawString("G",0,0);
+
+    humiditySprite.setFreeFont(&FreeMonoBold18pt7b); // FreeSansBold18pt7b
+    humiditySprite.setTextDatum(TC_DATUM);
+    // print humidity value
+    humiditySprite.setTextColor(TFT_YELLOW, TFT_BLACK, filledBackground);
+
+    char humidityBuffer[5];
+    snprintf(humidityBuffer, sizeof(humidityBuffer), "%.0f%%", humidity);
+    humiditySprite.drawString(humidityBuffer,pinSprite.width() / 2,0);
+
+    humiditySprite.setFreeFont(&FreeMonoBold18pt7b);
+    humiditySprite.setTextDatum(TR_DATUM);
+    // Set Internet upload 'Q' character background color based on internet upload status
+    if (isInternetUploadOk())
+      humiditySprite.setTextColor(TFT_WHITE, TFT_BLACK, filledBackground);
+    else
+      humiditySprite.setTextColor(TFT_WHITE, TFT_RED, filledBackground);
+    
+    humiditySprite.drawString("Q",pinSprite.width(),0);
+
+    humiditySprite.pushSprite(0, humiditySpriteY);
+}
+
+// total sprite RAM usage: 21892 bytes
 void drawSurveyDisplay()
 {
     int16_t humiditySpriteWidth = TFT_WIDTH, temperatureSpriteWidth = TFT_WIDTH, pinSpriteWidth = TFT_WIDTH;
